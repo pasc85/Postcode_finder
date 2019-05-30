@@ -1,8 +1,8 @@
 # minimum/maximum latitude/longitude for the area to search
-min_lat = 50.6
-max_lat = 51.1
 min_lon = -3.6
 max_lon = -3.0
+min_lat = 50.6
+max_lat = 51.1
 
 # dictionary of destinations, for example: running the script with
 # destination_distances = {'EX1': 45, 'TA1': 45}

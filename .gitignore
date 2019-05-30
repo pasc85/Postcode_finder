@@ -1,4 +1,6 @@
 .ipynb_checkpoints
+.vscode
 venv
+postcode_shapes
 *.p
 geckodriver.log
