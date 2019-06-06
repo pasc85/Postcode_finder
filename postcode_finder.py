@@ -3,6 +3,8 @@ import tkinter.scrolledtext as tkst
 import pandas as pd
 import time
 import pickle
+import numpy as np
+import math
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 
@@ -34,8 +36,18 @@ class PostcodeFinder():
         print('Number of postcodes within given area:', len(self.pc))
 
     def set_boundaries(self):
-        # TODO
-        sb = (50.6, -3.6, 51.1, -3.0)
+        def min_max_lat_lon(dest):
+            v = 1.0  # maximum speed in km per minute
+            lat = self.destination_coordinates[dest][0]
+            lon = self.destination_coordinates[dest][1]
+            dist = v * self.destination_distances[dest]
+            delta_lat = PostcodeFinder.compute_delta(lat, lon, dist, 'lat')
+            delta_lon = PostcodeFinder.compute_delta(lat, lon, dist, 'lon')
+            return (lat-delta_lat, lon-delta_lon, lat+delta_lat, lon+delta_lon)
+        m = np.zeros((len(self.destinations), 4))
+        for k in range(len(self.destinations)):
+            m[k] = min_max_lat_lon(self.destinations[k])
+        sb = (max(m[:, 0]), max(m[:, 1]), min(m[:, 2]), min(m[:, 3]))
         self.search_boundaries = sb
         print('Search area:')
         print('Latitude : ', (sb[0], sb[2]))
@@ -90,6 +102,29 @@ class PostcodeFinder():
             z = y.split(' ')[-1].rstrip('.').split(':')
             ret_value = int(z[0])*60 + int(z[1])
         return ret_value
+
+    def compute_delta(lat, lon, dist, direction):
+        R = 6371
+        t = (math.tan(dist/R/2))**2
+        c = 1
+        if direction == 'lon':
+            lat_rad = lat*math.pi/180
+            c = (math.cos(lat_rad))**2
+        d_rad = 2*math.asin(math.sqrt(t/(1+t)/c))
+        return d_rad*180/math.pi
+
+    def compute_distance(a_lat, a_lon, b_lat, b_lon):
+        R = 6371
+        c = math.pi/180
+        a_lat = a_lat * c
+        a_lon = a_lon * c
+        b_lat = b_lat * c
+        b_lon = b_lon * c
+        d_lat = b_lat - a_lat
+        d_lon = b_lon - a_lon
+        a = (math.sin(d_lat/2))**2 \
+            + math.cos(b_lat) * math.cos(a_lat) * (math.sin(d_lon/2))**2
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
     def get_pc_as_df(self):
         return self.pc
@@ -199,7 +234,7 @@ class Application(tk.Frame):
             self.dest_err_label['text'] = 'invalid distance(s)'
             return
         pcf = PostcodeFinder(input_dict)
-        # pcf.main()
+        pcf.main()
         output_fname = self.save_entry.get().strip()
         if output_fname:
             pc_file = open(output_fname, 'wb')
