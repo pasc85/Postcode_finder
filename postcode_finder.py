@@ -1,28 +1,41 @@
-import tkinter as tk
-import tkinter.scrolledtext as tkst
 import pandas as pd
+import numpy as np
 import time
 import pickle
-import numpy as np
 import math
+import tkinter as tk
+import tkinter.scrolledtext as tkst
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
+
+
+class SearchAreaError(Exception):
+
+    def __init__(self, value):
+        self.value = value
+
+    def __str__(self):
+        return repr(self.value)
 
 
 class PostcodeFinder():
 
     def __init__(self, destination_distances):
+        '''Set up the search for postcodes.'''
+        # dictionary of destination distances
         self.destination_distances = destination_distances
         self.url_templ = 'https://www.openstreetmap.org/directions?engine=fos'\
                          + 'sgis_osrm_car&route={:.4f}%2C{:.4f}%3B{:.4f}%2C'\
                          + '{:.4f}#map=5/55.781/-5.962'
+        # list of destinations and dictionary with their coordinates
         self.destinations = list(self.destination_distances.keys())
         self.destination_coordinates = {}
         for x in self.destinations:
             self.destination_coordinates[x] = (pc_raw.loc[x, 'latitude'],
                                                pc_raw.loc[x, 'longitude'])
+        # set the boundaries for the search,
+        # format of search_boundaries: min_lat, min_lon, max_lat, max_lon
         self.search_boundaries = None
-        # format of search boundaries: min_lat, min_lon, max_lat, max_lon
         self.set_boundaries()
         sb = self.search_boundaries
         # restrict raw dataframe of postcodes to the search area
@@ -31,41 +44,57 @@ class PostcodeFinder():
                          & pc_raw.latitude.le(sb[2])
                          & pc_raw.longitude.le(sb[3])]
         temp_col_list = list(pc_raw.columns) + self.destinations
-        # add columns for distances to destinations (to be filled in in main())
+        # add columns for distances to destinations,
+        # those distances will be computed in in main()
         self.pc = self.pc.reindex(columns=temp_col_list)
         print('Number of postcodes within given area:', len(self.pc))
 
     def set_boundaries(self):
+        '''Set the boundaries for the search.'''
+
         def min_max_lat_lon(dest):
-            v = 1.0  # maximum speed in km per minute
+            '''Return frame around given destination.'''
+            v = 1.5  # maximum speed in km per minute
             lat = self.destination_coordinates[dest][0]
             lon = self.destination_coordinates[dest][1]
             dist = v * self.destination_distances[dest]
             delta_lat = PostcodeFinder.compute_delta(lat, lon, dist, 'lat')
             delta_lon = PostcodeFinder.compute_delta(lat, lon, dist, 'lon')
             return (lat-delta_lat, lon-delta_lon, lat+delta_lat, lon+delta_lon)
+
+        # each row of the matrix m corresponds to a destination and contains
+        # the search boundaries for that destination, which depends on the 
+        # entered distance
         m = np.zeros((len(self.destinations), 4))
         for k in range(len(self.destinations)):
             m[k] = min_max_lat_lon(self.destinations[k])
+        # take intersection of the frames around individual destinations
         sb = (max(m[:, 0]), max(m[:, 1]), min(m[:, 2]), min(m[:, 3]))
+        # raise error if search area is empty (recall
+        # format of search_boundaries: min_lat, min_lon, max_lat, max_lon)
+        if sb[0] > sb[2] or sb[1] > sb[3]:
+            raise SearchAreaError('Empty search area. Make distances bigger.')
+        # set search boundaries and print in terminal
         self.search_boundaries = sb
         print('Search area:')
         print('Latitude : ', (sb[0], sb[2]))
         print('Longitude: ', (sb[1], sb[3]))
 
     def main(self):
-        print('Loop over destination postcodes and determine distances ...')
-        # headless browser session
+        '''Computes distances for the destination columns.'''
+        # headless browser session to query OpenStreetMaps routing
         options = Options()
         options.headless = True
         driver = webdriver.Firefox(firefox_options=options)
-        # fill in distance in each column (i.e. for each destination)
+        # loop over columns, i.e. destination postcodes
+        print('Loop over destination postcodes and determine distances ...')
         for d in self.destinations:
             print('Destination:', d)
             progress = 0
             dest_coord = self.destination_coordinates[d]
             dest_lat = dest_coord[0]
             dest_lon = dest_coord[1]
+            # loop over rows, i.e. origin postcodes
             for p in list(self.pc.index):
                 orig_lat = self.pc.at[p, 'latitude']
                 orig_lon = self.pc.at[p, 'longitude']
@@ -74,6 +103,8 @@ class PostcodeFinder():
                 self.pc.loc[p, d] = t
                 progress += 1
                 print(progress, '\t', p, '\t Time:', t)
+            # remove postcodes that don't satisfy the distance requirement
+            # for the destination that has just been computed
             self.pc = self.pc[self.pc[d].le(self.destination_distances[d])]
             self.pc = self.pc.astype({d: int})
         driver.quit()  # close the headless browser session
@@ -85,16 +116,15 @@ class PostcodeFinder():
               len(self.pc))
 
     def get_distance(self, orig_lat, orig_lon, dest_lat, dest_lon, driver):
-        # find distance between two points
-        # in minutes by car, using OSM routing:
+        '''Find driving distance between two points using OSM routing.'''
+        # URL to be requested
         urlpage = self.url_templ.format(orig_lat, orig_lon, dest_lat, dest_lon)
-        # print(urlpage)
-        driver.get(urlpage)  # wait to give browser time to load content
-        time.sleep(2)
+        driver.get(urlpage)
+        time.sleep(2)  # wait to give browser time to load content
         # extract cell containing the travel time from the routing summary
         x = driver.find_elements_by_xpath("//*[@id='routing_summary']")
         if len(x) == 0:
-            # if routing summary not found, return -1 as travel time
+            # if 'routing summary' not found, return -1 as travel time
             ret_value = -1
         else:
             # otherwise, extract travel time and return
@@ -104,6 +134,7 @@ class PostcodeFinder():
         return ret_value
 
     def compute_delta(lat, lon, dist, direction):
+        '''Compute coordinate difference corresponding to given distance.'''
         R = 6371
         t = (math.tan(dist/R/2))**2
         c = 1
@@ -114,6 +145,7 @@ class PostcodeFinder():
         return d_rad*180/math.pi
 
     def compute_distance(a_lat, a_lon, b_lat, b_lon):
+        '''Compute distance between two points given by coordinates.'''
         R = 6371
         c = math.pi/180
         a_lat = a_lat * c
@@ -127,15 +159,33 @@ class PostcodeFinder():
         return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
     def get_pc_as_df(self):
+        '''Return table of postcodes as pandas dataframe.'''
         return self.pc
 
     def get_pc_as_str(self):
+        '''Return table of postcodes as string.'''
         return self.pc.to_string()
 
 
 class PostcodeVisualiser():
     # TODO
-    pass
+    def make_square(x):
+        return_value = None
+        centre_lat = (x[0]+x[2])/2
+        centre_lon = (x[1]+x[3])/2
+        north_south = PostcodeFinder.compute_distance(x[0], centre_lon,
+                                                      x[2], centre_lon)
+        east_west = PostcodeFinder.compute_distance(centre_lat, x[1],
+                                                    centre_lat, x[3])
+        if north_south > east_west:
+            delta = PostcodeFinder.compute_delta(centre_lat, centre_lon,
+                                                 north_south/2, 'lon')
+            return_value = (x[0], centre_lon-delta, x[2], centre_lon+delta)
+        else:
+            delta = PostcodeFinder.compute_delta(centre_lat, centre_lon,
+                                                 east_west/2, 'lat')
+            return_value = (centre_lat-delta, x[1], centre_lat+delta, x[3])
+        return return_value
 
 
 class Application(tk.Frame):
@@ -233,7 +283,12 @@ class Application(tk.Frame):
         if min(input_dict.values()) <= 0:
             self.dest_err_label['text'] = 'invalid distance(s)'
             return
-        pcf = PostcodeFinder(input_dict)
+        try:
+            pcf = PostcodeFinder(input_dict)
+        except SearchAreaError as sae:
+            print(sae)
+            self.dest_err_label['text'] = 'empty search area'
+            return
         pcf.main()
         output_fname = self.save_entry.get().strip()
         if output_fname:
@@ -275,9 +330,11 @@ class Application(tk.Frame):
         return True
 
 
+# table of all UK postcodes with coordinates
 pc_raw = pd.read_csv('postcode-outcodes.csv',
                      index_col='postcode', header=0).drop(columns=['id'])
 pc_set = set(pc_raw.index)  # set of valid UK postcodes
+# start the application
 root = tk.Tk()
 root.title('Postcode Finder by PP')
 app = Application(master=root)
