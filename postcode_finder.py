@@ -6,7 +6,11 @@ import math
 import tkinter as tk
 import tkinter.scrolledtext as tkst
 from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
+import geopandas
+from shapely.geometry import Point
+from matplotlib.patches import Rectangle
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib import pyplot as plt
 
 
 class SearchAreaError(Exception):
@@ -24,8 +28,8 @@ class PostcodeFinder():
         '''Set up the search for postcodes.'''
         # dictionary of destination distances
         self.destination_distances = destination_distances
-        self.url_templ = 'https://www.openstreetmap.org/directions?engine=fos'\
-                         + 'sgis_osrm_car&route={:.4f}%2C{:.4f}%3B{:.4f}%2C'\
+        self.url_templ = 'https://www.openstreetmap.org/directions?engine=fo' \
+                         + 'ssgis_osrm_car&route={:.4f}%2C{:.4f}%3B{:.4f}%2C' \
                          + '{:.4f}#map=5/55.781/-5.962'
         # list of destinations and dictionary with their coordinates
         self.destinations = list(self.destination_distances.keys())
@@ -45,7 +49,7 @@ class PostcodeFinder():
                          & pc_raw.longitude.le(sb[3])]
         temp_col_list = list(pc_raw.columns) + self.destinations
         # add columns for distances to destinations,
-        # those distances will be computed in in main()
+        # those distances will be computed in in pcf_main()
         self.pc = self.pc.reindex(columns=temp_col_list)
         print('Number of postcodes within given area:', len(self.pc))
 
@@ -54,7 +58,7 @@ class PostcodeFinder():
 
         def min_max_lat_lon(dest):
             '''Return frame around given destination.'''
-            v = 1.5  # maximum speed in km per minute
+            v = max_speed  # maximum speed in km per minute
             lat = self.destination_coordinates[dest][0]
             lon = self.destination_coordinates[dest][1]
             dist = v * self.destination_distances[dest]
@@ -63,7 +67,7 @@ class PostcodeFinder():
             return (lat-delta_lat, lon-delta_lon, lat+delta_lat, lon+delta_lon)
 
         # each row of the matrix m corresponds to a destination and contains
-        # the search boundaries for that destination, which depends on the 
+        # the search boundaries for that destination, which depends on the
         # entered distance
         m = np.zeros((len(self.destinations), 4))
         for k in range(len(self.destinations)):
@@ -80,16 +84,16 @@ class PostcodeFinder():
         print('Latitude : ', (sb[0], sb[2]))
         print('Longitude: ', (sb[1], sb[3]))
 
-    def main(self):
+    def pcf_main(self):
         '''Computes distances for the destination columns.'''
         # headless browser session to query OpenStreetMaps routing
-        options = Options()
+        options = webdriver.firefox.options.Options()
         options.headless = True
         driver = webdriver.Firefox(firefox_options=options)
         # loop over columns, i.e. destination postcodes
         print('Loop over destination postcodes and determine distances ...')
         for d in self.destinations:
-            print('Destination:', d)
+            print('Destination:', d)  # TODO also print number of pc
             progress = 0
             dest_coord = self.destination_coordinates[d]
             dest_lat = dest_coord[0]
@@ -120,7 +124,7 @@ class PostcodeFinder():
         # URL to be requested
         urlpage = self.url_templ.format(orig_lat, orig_lon, dest_lat, dest_lon)
         driver.get(urlpage)
-        time.sleep(2)  # wait to give browser time to load content
+        time.sleep(wait_time)  # wait to give browser time to load content
         # extract cell containing the travel time from the routing summary
         x = driver.find_elements_by_xpath("//*[@id='routing_summary']")
         if len(x) == 0:
@@ -168,24 +172,89 @@ class PostcodeFinder():
 
 
 class PostcodeVisualiser():
-    # TODO
-    def make_square(x):
-        return_value = None
-        centre_lat = (x[0]+x[2])/2
-        centre_lon = (x[1]+x[3])/2
-        north_south = PostcodeFinder.compute_distance(x[0], centre_lon,
-                                                      x[2], centre_lon)
-        east_west = PostcodeFinder.compute_distance(centre_lat, x[1],
-                                                    centre_lat, x[3])
-        if north_south > east_west:
-            delta = PostcodeFinder.compute_delta(centre_lat, centre_lon,
-                                                 north_south/2, 'lon')
-            return_value = (x[0], centre_lon-delta, x[2], centre_lon+delta)
-        else:
-            delta = PostcodeFinder.compute_delta(centre_lat, centre_lon,
-                                                 east_west/2, 'lat')
-            return_value = (centre_lat-delta, x[1], centre_lat+delta, x[3])
-        return return_value
+
+    def __init__(self, pcf):
+        self.pcf = pcf
+        self.vis_boundaries = None
+        self.pc_centres = None
+        self.dest_coords = None
+        self.set_dest_coords()
+        self.set_vis_boundaries()
+        self.set_pc_centres()
+        self.background_map = geopandas.read_file('postcode_shapes'
+                                                  + '/Distribution/Areas.shp')
+        self.pc_shapes = geopandas.read_file('postcode_shapes'
+                                             + '/Distribution/Districts.shp') \
+                                  .rename(columns={'name': 'postcode'}) \
+                                  .set_index('postcode') \
+                                  .reindex(index=self.pcf.pc.index)
+
+    def set_vis_boundaries(self):
+
+        def make_square(x):
+            return_value = None
+            centre_lat = (x[0]+x[2])/2
+            centre_lon = (x[1]+x[3])/2
+            north_south = PostcodeFinder.compute_distance(x[0], centre_lon,
+                                                          x[2], centre_lon)
+            east_west = PostcodeFinder.compute_distance(centre_lat, x[1],
+                                                        centre_lat, x[3])
+            if north_south > east_west:
+                delta = PostcodeFinder.compute_delta(centre_lat, centre_lon,
+                                                     north_south/2, 'lon')
+                return_value = (x[0], centre_lon-delta, x[2], centre_lon+delta)
+            else:
+                delta = PostcodeFinder.compute_delta(centre_lat, centre_lon,
+                                                     east_west/2, 'lat')
+                return_value = (centre_lat-delta, x[1], centre_lat+delta, x[3])
+            return return_value
+
+        sb = self.pcf.search_boundaries
+        vb = (min(sb[0], min(self.dest_coords.latitude)),
+              min(sb[1], min(self.dest_coords.longitude)),
+              max(sb[2], max(self.dest_coords.latitude)),
+              max(sb[3], max(self.dest_coords.longitude)))
+        self.vis_boundaries = make_square(vb)
+
+    def set_pc_centres(self):
+        temp_df = self.pcf.pc.reindex(columns=['latitude', 'longitude',
+                                               'coordinates'])
+        temp_df['coordinates'] = list(zip(temp_df.longitude, temp_df.latitude))
+        temp_df['coordinates'] = temp_df['coordinates'].apply(Point)
+        self.pc_centres = geopandas.GeoDataFrame(temp_df,
+                                                 geometry='coordinates')
+
+    def set_dest_coords(self):
+        cols = list(self.pcf.pc.columns)
+        cols.remove('longitude')
+        cols.remove('latitude')
+        temp_df = pc_raw.reindex(index=cols)
+        temp_df['coordinates'] = list(zip(temp_df.longitude, temp_df.latitude))
+        temp_df['coordinates'] = temp_df['coordinates'].apply(Point)
+        self.dest_coords = geopandas.GeoDataFrame(temp_df,
+                                                  geometry='coordinates')
+
+    def vis_main(self):
+        fig, axs = plt.subplots(1, figsize=figure_size, dpi=100)
+        self.background_map.plot(ax=axs, color='green', edgecolor='black')
+        self.pc_shapes.plot(ax=axs, color='yellow', edgecolor='red')
+        if draw_search_area:
+            sb = self.pcf.search_boundaries
+            rect = Rectangle((sb[1], sb[0]), sb[3]-sb[1], sb[2]-sb[0],
+                             linestyle='--', fill=False,
+                             linewidth=1, color='b')
+            axs.add_patch(rect)
+        if pc_labels:
+            props = dict(boxstyle='round', facecolor='linen', alpha=1)
+            for p in self.pc_centres.iterrows():
+                axs.text(p[1]['longitude'], p[1]['latitude'], p[0],
+                         horizontalalignment='center', fontsize=11, bbox=props)
+        self.dest_coords.plot(ax=axs, color='blue', markersize=40)
+        vb = self.vis_boundaries
+        axs.set_xlim(([vb[1], vb[3]]))
+        axs.set_ylim(([vb[0], vb[2]]))
+        axs.set_aspect('auto')
+        return fig, axs
 
 
 class Application(tk.Frame):
@@ -237,7 +306,7 @@ class Application(tk.Frame):
 
         self.find_postcodes_button = tk.Button(self)
         self.find_postcodes_button['text'] = 'Find postcodes'
-        self.find_postcodes_button['command'] = self.fp_main
+        self.find_postcodes_button['command'] = self.app_main
         self.find_postcodes_button.grid(row=6, column=3, padx=10)
 
         self.save_label = tk.Label(self, text='Save dataframe as ')
@@ -248,12 +317,14 @@ class Application(tk.Frame):
         self.visualisation_label = tk.Label(self, text='Draw map')
         self.visualisation_label.grid(row=6, column=0, sticky=tk.E)
         self.visualisation_CB = tk.Checkbutton(self)
+        self.visualisation_CB_value = tk.IntVar()
+        self.visualisation_CB['variable'] = self.visualisation_CB_value
         self.visualisation_CB.grid(row=6, column=1, sticky=tk.W)
 
         self.output_ST = tkst.ScrolledText(self, width=48)
         self.output_ST.grid(row=7, column=0, rowspan=4, columnspan=4)
 
-    def fp_main(self):
+    def app_main(self):
         self.clear_error()
         self.output_ST.delete(1.0, tk.END)
         if not self.valid_filename():
@@ -289,7 +360,7 @@ class Application(tk.Frame):
             print(sae)
             self.dest_err_label['text'] = 'empty search area'
             return
-        pcf.main()
+        pcf.pcf_main()
         output_fname = self.save_entry.get().strip()
         if output_fname:
             pc_file = open(output_fname, 'wb')
@@ -297,7 +368,15 @@ class Application(tk.Frame):
             pc_file.close()
             print('Saved dataframe as "' + output_fname + '"')
         self.output_ST.insert(1.0, pcf.get_pc_as_str())
-        # TODO : if statement for visualisation
+        if self.visualisation_CB_value.get() == 1 and len(pcf.pc) > 0:
+            vis_window = tk.Tk()
+            vis_window.title('Postcodes satisfying the distance requirements')
+            pcv = PostcodeVisualiser(pcf)
+            fig, axs = pcv.vis_main()
+            vis_canvas = FigureCanvasTkAgg(fig, master=vis_window)
+            vis_canvas.draw()
+            vis_canvas.get_tk_widget().pack()
+            vis_window.mainloop()
 
     def clear_error(self):
         self.dest_err_label['text'] = ''
@@ -334,6 +413,15 @@ class Application(tk.Frame):
 pc_raw = pd.read_csv('postcode-outcodes.csv',
                      index_col='postcode', header=0).drop(columns=['id'])
 pc_set = set(pc_raw.index)  # set of valid UK postcodes
+
+# other constants
+draw_search_area = True  # to check automatic choice of search area
+figure_size = (6, 6)  # figure size for the geopandas visualisation
+max_speed = 1.2
+# TODO: include max_speed in GUI and introduce SPY button
+wait_time = 2  # allow time for query, see get_distance()
+pc_labels = False  # labels for postcodes on geopandas map
+
 # start the application
 root = tk.Tk()
 root.title('Postcode Finder by PP')
