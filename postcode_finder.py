@@ -1,3 +1,6 @@
+# POSTCODE FINDER
+# AUTHOR: Pascal Philipp
+
 import pandas as pd
 import numpy as np
 import time
@@ -24,10 +27,11 @@ class SearchAreaError(Exception):
 
 class PostcodeFinder():
 
-    def __init__(self, destination_distances):
+    def __init__(self, destination_distances, max_speed):
         '''Set up the search for postcodes.'''
         # dictionary of destination distances
         self.destination_distances = destination_distances
+        # the OpenStreetMaps url to be queried later
         self.url_templ = 'https://www.openstreetmap.org/directions?engine=fo' \
                          + 'ssgis_osrm_car&route={:.4f}%2C{:.4f}%3B{:.4f}%2C' \
                          + '{:.4f}#map=5/55.781/-5.962'
@@ -40,7 +44,7 @@ class PostcodeFinder():
         # set the boundaries for the search,
         # format of search_boundaries: min_lat, min_lon, max_lat, max_lon
         self.search_boundaries = None
-        self.set_boundaries()
+        self.set_boundaries(max_speed)
         sb = self.search_boundaries
         # restrict raw dataframe of postcodes to the search area
         self.pc = pc_raw[pc_raw.latitude.ge(sb[0])
@@ -53,10 +57,10 @@ class PostcodeFinder():
         self.pc = self.pc.reindex(columns=temp_col_list)
         print('Number of postcodes within given area:', len(self.pc))
 
-    def set_boundaries(self):
+    def set_boundaries(self, max_speed):
         '''Set the boundaries for the search.'''
 
-        def min_max_lat_lon(dest):
+        def min_max_lat_lon(dest, max_speed):
             '''Return frame around given destination.'''
             v = max_speed  # maximum speed in km per minute
             lat = self.destination_coordinates[dest][0]
@@ -66,15 +70,15 @@ class PostcodeFinder():
             delta_lon = PostcodeFinder.compute_delta(lat, lon, dist, 'lon')
             return (lat-delta_lat, lon-delta_lon, lat+delta_lat, lon+delta_lon)
 
-        # each row of the matrix m corresponds to a destination and contains
-        # the search boundaries for that destination, which depends on the
-        # entered distance
+        # each row of the matrix m below corresponds to a destination and
+        # contains the search boundaries for that destination, which depends
+        # on the entered distance
         m = np.zeros((len(self.destinations), 4))
         for k in range(len(self.destinations)):
-            m[k] = min_max_lat_lon(self.destinations[k])
-        # take intersection of the frames around individual destinations
+            m[k] = min_max_lat_lon(self.destinations[k], max_speed)
+        # take intersection of the frames around the individual destinations
         sb = (max(m[:, 0]), max(m[:, 1]), min(m[:, 2]), min(m[:, 3]))
-        # raise error if search area is empty (recall
+        # raise error if search area is empty (recall the
         # format of search_boundaries: min_lat, min_lon, max_lat, max_lon)
         if sb[0] > sb[2] or sb[1] > sb[3]:
             raise SearchAreaError('Empty search area. Make distances bigger.')
@@ -84,8 +88,8 @@ class PostcodeFinder():
         print('Latitude : ', (sb[0], sb[2]))
         print('Longitude: ', (sb[1], sb[3]))
 
-    def pcf_main(self):
-        '''Computes distances for the destination columns.'''
+    def pcf_main(self, wait_time):
+        '''Computes distance in minutes by car.'''
         # headless browser session to query OpenStreetMaps routing
         options = webdriver.firefox.options.Options()
         options.headless = True
@@ -93,17 +97,17 @@ class PostcodeFinder():
         # loop over columns, i.e. destination postcodes
         print('Loop over destination postcodes and determine distances ...')
         for d in self.destinations:
-            print('Destination:', d)  # TODO also print number of pc
+            print('Destination:', d, '; Postcodes to check:', len(self.pc))
             progress = 0
             dest_coord = self.destination_coordinates[d]
             dest_lat = dest_coord[0]
             dest_lon = dest_coord[1]
-            # loop over rows, i.e. origin postcodes
+            # loop over rows, i.e. origin postcodes and find distances
             for p in list(self.pc.index):
                 orig_lat = self.pc.at[p, 'latitude']
                 orig_lon = self.pc.at[p, 'longitude']
                 t = self.get_distance(orig_lat, orig_lon,
-                                      dest_lat, dest_lon, driver)
+                                      dest_lat, dest_lon, driver, wait_time)
                 self.pc.loc[p, d] = t
                 progress += 1
                 print(progress, '\t', p, '\t Time:', t)
@@ -119,7 +123,8 @@ class PostcodeFinder():
         print('Number of postcodes satisfying distance requirements:',
               len(self.pc))
 
-    def get_distance(self, orig_lat, orig_lon, dest_lat, dest_lon, driver):
+    def get_distance(self, orig_lat, orig_lon, dest_lat, dest_lon,
+                     driver, wait_time):
         '''Find driving distance between two points using OSM routing.'''
         # URL to be requested
         urlpage = self.url_templ.format(orig_lat, orig_lon, dest_lat, dest_lon)
@@ -138,7 +143,9 @@ class PostcodeFinder():
         return ret_value
 
     def compute_delta(lat, lon, dist, direction):
-        '''Compute coordinate difference corresponding to given distance.'''
+        '''Compute coordinate difference corresponding to given
+        as-the-crow-flies distance in km.
+        '''
         R = 6371
         t = (math.tan(dist/R/2))**2
         c = 1
@@ -149,7 +156,9 @@ class PostcodeFinder():
         return d_rad*180/math.pi
 
     def compute_distance(a_lat, a_lon, b_lat, b_lon):
-        '''Compute distance between two points given by coordinates.'''
+        '''Compute as-the-crow-flies distance in km between two points given
+        by coordinates.
+        '''
         R = 6371
         c = math.pi/180
         a_lat = a_lat * c
@@ -163,11 +172,11 @@ class PostcodeFinder():
         return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
     def get_pc_as_df(self):
-        '''Return table of postcodes as pandas dataframe.'''
+        '''Return the table of postcodes as a pandas dataframe.'''
         return self.pc
 
     def get_pc_as_str(self):
-        '''Return table of postcodes as string.'''
+        '''Return the table of postcodes as a string.'''
         return self.pc.to_string()
 
 
@@ -234,17 +243,17 @@ class PostcodeVisualiser():
         self.dest_coords = geopandas.GeoDataFrame(temp_df,
                                                   geometry='coordinates')
 
-    def vis_main(self):
+    def vis_main(self, parent):
         fig, axs = plt.subplots(1, figsize=figure_size, dpi=100)
         self.background_map.plot(ax=axs, color='green', edgecolor='black')
         self.pc_shapes.plot(ax=axs, color='yellow', edgecolor='red')
-        if draw_search_area:
+        if parent.draw_search_area_CB_value.get():
             sb = self.pcf.search_boundaries
             rect = Rectangle((sb[1], sb[0]), sb[3]-sb[1], sb[2]-sb[0],
                              linestyle='--', fill=False,
                              linewidth=1, color='b')
             axs.add_patch(rect)
-        if pc_labels:
+        if parent.pc_labels_CB_value.get():
             props = dict(boxstyle='round', facecolor='linen', alpha=1)
             for p in self.pc_centres.iterrows():
                 axs.text(p[1]['longitude'], p[1]['latitude'], p[0],
@@ -270,20 +279,18 @@ class Application(tk.Frame):
                                   + 'and maximum distance'
         self.info_label.grid(row=0, column=0, columnspan=4)
 
-        self.dest1_label = tk.Label(self, text='Destination 1: ')
-        self.dest1_label.grid(row=1, column=0)
-        self.dest2_label = tk.Label(self, text='Destination 2: ')
-        self.dest2_label.grid(row=2, column=0)
-        self.dest3_label = tk.Label(self, text='Destination 3: ')
-        self.dest3_label.grid(row=3, column=0)
-
+        self.dest1_label = tk.Label(self, text='Destination 1 ')
+        self.dest1_label.grid(row=1, column=0, sticky=tk.E)
+        self.dest2_label = tk.Label(self, text='Destination 2 ')
+        self.dest2_label.grid(row=2, column=0, sticky=tk.E)
+        self.dest3_label = tk.Label(self, text='Destination 3 ')
+        self.dest3_label.grid(row=3, column=0, sticky=tk.E)
         self.dest1_pc_entry = tk.Entry(self, width=4)
         self.dest1_pc_entry.grid(row=1, column=1)
         self.dest2_pc_entry = tk.Entry(self, width=4)
         self.dest2_pc_entry.grid(row=2, column=1)
         self.dest3_pc_entry = tk.Entry(self, width=4)
         self.dest3_pc_entry.grid(row=3, column=1)
-
         self.dest1_dist_entry = tk.Entry(self, width=3)
         self.dest1_dist_entry.grid(row=1, column=2)
         self.dest2_dist_entry = tk.Entry(self, width=3)
@@ -292,7 +299,7 @@ class Application(tk.Frame):
         self.dest3_dist_entry.grid(row=3, column=2)
 
         self.dest_err_label = tk.Label(self, fg='red')
-        self.dest_err_label.grid(row=5, column=3)
+        self.dest_err_label.grid(row=3, column=3)
 
         self.sample_search_button = tk.Button(self)
         self.sample_search_button['text'] = 'Sample search'
@@ -302,31 +309,88 @@ class Application(tk.Frame):
         self.clear_button = tk.Button(self)
         self.clear_button['text'] = 'Clear'
         self.clear_button['command'] = self.clear_all
-        self.clear_button.grid(row=4, column=3, ipadx=28)
+        self.clear_button.grid(row=4, column=3, ipadx=32)
 
         self.find_postcodes_button = tk.Button(self)
         self.find_postcodes_button['text'] = 'Find postcodes'
         self.find_postcodes_button['command'] = self.app_main
-        self.find_postcodes_button.grid(row=6, column=3, padx=10)
-
-        self.save_label = tk.Label(self, text='Save dataframe as ')
-        self.save_label.grid(row=5, column=0, sticky=tk.E)
-        self.save_entry = tk.Entry(self, width=8)
-        self.save_entry.grid(row=5, column=1, columnspan=2, sticky=tk.W)
+        self.find_postcodes_button.grid(row=5, column=3, padx=10)
 
         self.visualisation_label = tk.Label(self, text='Draw map')
-        self.visualisation_label.grid(row=6, column=0, sticky=tk.E)
+        self.visualisation_label.grid(row=5, column=0, sticky=tk.E)
         self.visualisation_CB = tk.Checkbutton(self)
         self.visualisation_CB_value = tk.IntVar()
         self.visualisation_CB['variable'] = self.visualisation_CB_value
-        self.visualisation_CB.grid(row=6, column=1, sticky=tk.W)
+        self.visualisation_CB.grid(row=5, column=1, sticky=tk.W)
 
         self.output_ST = tkst.ScrolledText(self, width=48)
-        self.output_ST.grid(row=7, column=0, rowspan=4, columnspan=4)
+        self.output_ST.grid(row=6, column=0, columnspan=4)
 
-    def app_main(self):
+        self.search_settings_label = tk.Label(self)
+        self.search_settings_label['text'] = '-- Search settings --'
+        self.search_settings_label.grid(row=7, column=0, columnspan=4)
+        self.max_speed_label = tk.Label(self, text='Max speed in km/min')
+        self.max_speed_label.grid(row=8, column=0, sticky=tk.E)
+        self.max_speed_entry = tk.Entry(self, width=3)
+        self.max_speed_entry.grid(row=8, column=1, columnspan=2, sticky=tk.W)
+        self.max_speed_entry.insert(0, 1.2)
+        self.spy_button = tk.Button(self)
+        self.spy_button['text'] = 'Spy search area'
+        self.spy_button['command'] = self.spy
+        self.spy_button.grid(row=8, column=3)
+
+        self.map_settings_label = tk.Label(self)
+        self.map_settings_label['text'] = '-- Map settings --'
+        self.map_settings_label.grid(row=9, column=0, columnspan=4)
+        self.pc_labels_label = tk.Label(self, text='Label postcodes')
+        self.pc_labels_label.grid(row=10, column=0, sticky=tk.E)
+        self.pc_labels_CB = tk.Checkbutton(self)
+        self.pc_labels_CB_value = tk.IntVar()
+        self.pc_labels_CB['variable'] = self.pc_labels_CB_value
+        self.pc_labels_CB.grid(row=10, column=1, sticky=tk.W)
+        self.draw_search_area_label = tk.Label(self, text='Draw search area')
+        self.draw_search_area_label.grid(row=10, column=3, sticky=tk.W)
+        self.draw_search_area_CB = tk.Checkbutton(self)
+        self.draw_search_area_CB_value = tk.IntVar()
+        self.draw_search_area_CB['variable'] = self.draw_search_area_CB_value
+        self.draw_search_area_CB.grid(row=10, column=2, sticky=tk.E)
+
+        self.technical_settings_label = tk.Label(self)
+        self.technical_settings_label['text'] = '-- Other settings --'
+        self.technical_settings_label.grid(row=11, column=0, columnspan=4)
+        self.save_label = tk.Label(self, text='Save dataframe as')
+        self.save_label.grid(row=12, column=0, sticky=tk.E)
+        self.save_entry = tk.Entry(self, width=8)
+        self.save_entry.grid(row=12, column=1, columnspan=2, sticky=tk.W)
+        self.wait_time_label = tk.Label(self, text='Browser wait time')
+        self.wait_time_label.grid(row=13, column=0, sticky=tk.E)
+        self.wait_time_entry = tk.Entry(self, width=3)
+        self.wait_time_entry.grid(row=13, column=1, sticky=tk.W)
+        self.wait_time_entry.insert(0, 2.0)
+        self.wait_time_expl_label = tk.Label(self)
+        self.wait_time_expl_label['text'] = '(increase when dist = -1)'
+        self.wait_time_expl_label.grid(row=13, column=2, columnspan=2)
+
+    def spy(self):
+        self.app_main(True)
+
+    def app_main(self, spy=False):
         self.clear_error()
         self.output_ST.delete(1.0, tk.END)
+        try:
+            max_speed = float(self.max_speed_entry.get().strip())
+            if max_speed <= 0:
+                raise ValueError
+        except ValueError:
+            self.dest_err_label['text'] = 'invalid max speed'
+            return
+        try:
+            wait_time = float(self.wait_time_entry.get().strip())
+            if wait_time <= 0:
+                raise ValueError
+        except ValueError:
+            self.dest_err_label['text'] = 'invalid wait time'
+            return
         if not self.valid_filename():
             self.dest_err_label['text'] = 'invalid filename'
             return
@@ -355,24 +419,26 @@ class Application(tk.Frame):
             self.dest_err_label['text'] = 'invalid distance(s)'
             return
         try:
-            pcf = PostcodeFinder(input_dict)
+            pcf = PostcodeFinder(input_dict, max_speed)
         except SearchAreaError as sae:
             print(sae)
             self.dest_err_label['text'] = 'empty search area'
             return
-        pcf.pcf_main()
+        if not spy:
+            pcf.pcf_main(wait_time)
         output_fname = self.save_entry.get().strip()
         if output_fname:
             pc_file = open(output_fname, 'wb')
             pickle.dump(pcf.get_pc_as_df(), pc_file)
             pc_file.close()
             print('Saved dataframe as "' + output_fname + '"')
-        self.output_ST.insert(1.0, pcf.get_pc_as_str())
+        self.output_ST.insert(1.0, pcf.get_pc_as_str() + '\nCount: '
+                              + str(len(pcf.get_pc_as_df())))
         if self.visualisation_CB_value.get() == 1 and len(pcf.pc) > 0:
             vis_window = tk.Tk()
             vis_window.title('Postcodes satisfying the distance requirements')
             pcv = PostcodeVisualiser(pcf)
-            fig, axs = pcv.vis_main()
+            fig, axs = pcv.vis_main(self)
             vis_canvas = FigureCanvasTkAgg(fig, master=vis_window)
             vis_canvas.draw()
             vis_canvas.get_tk_widget().pack()
@@ -415,15 +481,10 @@ pc_raw = pd.read_csv('postcode-outcodes.csv',
 pc_set = set(pc_raw.index)  # set of valid UK postcodes
 
 # other constants
-draw_search_area = True  # to check automatic choice of search area
 figure_size = (6, 6)  # figure size for the geopandas visualisation
-max_speed = 1.2
-# TODO: include max_speed in GUI and introduce SPY button
-wait_time = 2  # allow time for query, see get_distance()
-pc_labels = False  # labels for postcodes on geopandas map
 
 # start the application
 root = tk.Tk()
-root.title('Postcode Finder by PP')
+root.title('Postcode Finder')
 app = Application(master=root)
 app.mainloop()
