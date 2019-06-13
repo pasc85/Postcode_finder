@@ -93,7 +93,7 @@ class PostcodeFinder():
         # headless browser session to query OpenStreetMaps routing
         options = webdriver.firefox.options.Options()
         options.headless = True
-        driver = webdriver.Firefox(firefox_options=options)
+        driver = webdriver.Firefox(options=options)
         # loop over columns, i.e. destination postcodes
         print('Loop over destination postcodes and determine distances ...')
         for d in self.destinations:
