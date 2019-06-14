@@ -1,0 +1,10 @@
+name: postcodefinder
+channels:
+  - defaults
+dependencies:
+  - geopandas=0.4.1
+  - pandas=0.24.2
+  - python=3.6.4
+  - selenium=3.141.0
+prefix: /home/pascal/anaconda3/envs/postcodefinder
+

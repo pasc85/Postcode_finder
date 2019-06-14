@@ -16,10 +16,12 @@ https://www.freemaptools.com/download-uk-postcode-lat-lng.htm
 
 Requirements:
 - geckodriver needs to be installed
-- required python packages are in 'requirements.txt'
+- recreate python environment using 'environment.yml'
 - for the geopandas visualisation, the shapefiles under 
 'UK postcode boundary polygons' on the page
 https://www.opendoorlogistics.com/downloads/
-need to be downloaded and put in folder postcode_shapes in the working
-directory.
+need to be downloaded and put in folder a folder caller 'postcode_shapes'
+in the working directory.
 
+Demo:
+https://www.youtube.com/watch?v=jSgu0_SoSNo
